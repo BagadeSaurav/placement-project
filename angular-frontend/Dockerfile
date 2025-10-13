@@ -1,10 +1,10 @@
-FROM node:14-alpine
+FROM node:16 as build
 WORKDIR /usr/src/app
 COPY package*.json ./
 RUN npm install
+RUN npm install -g @angular/cli@14.2.1
 COPY . .
-RUN npm run build
-RUN apk update && apk add nginx
-COPY /usr/src/app/dist/angular-frontend /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+RUN ng build --configuration production
+FROM nginx:alpine
+COPY --from=build /usr/src/app/dist/angular-frontend /usr/share/nginx/html
+EXPOSE 80
