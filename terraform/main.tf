@@ -131,7 +131,7 @@ resource "aws_security_group" "master_sg" {
 ##########################################################
 
 resource "aws_instance" "master_instance" {
-  ami                    = "ami-0360c520857e3138f" # Ubuntu 20.04
+  ami                    = "ami-02d26659fd82cf299" # Ubuntu 20.04
   instance_type          = "t3.large"
   subnet_id              = aws_subnet.public_1.id
   key_name               = "saurav"
@@ -233,7 +233,7 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
 ##########################################################
 
 resource "aws_eks_cluster" "eks_cluster" {
-  name     = "custom-eks"
+  name     = "cluster"
   role_arn = aws_iam_role.eks_cluster_role.arn
 
   vpc_config {
@@ -248,7 +248,7 @@ resource "aws_eks_node_group" "eks_nodes" {
   node_group_name = "eks-nodes"
   node_role_arn   = aws_iam_role.eks_node_role.arn
   subnet_ids      = [aws_subnet.public_1.id, aws_subnet.public_2.id]
-  instance_types  = ["t3.medium"]
+  instance_types  = ["t2.medium"]
 
   scaling_config {
     desired_size = 2
