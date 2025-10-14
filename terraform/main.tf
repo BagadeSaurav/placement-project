@@ -1,81 +1,197 @@
+##########################################################
+# PROVIDER
+##########################################################
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+
+  required_version = ">= 1.5.0"
+}
+
 provider "aws" {
-  region = "us-east-1"
+  region = "ap-south-1"
 }
 
-# Create Custom VPC
-resource "aws_vpc" "eks_vpc" {
+##########################################################
+# VPC
+##########################################################
+
+resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true
   enable_dns_hostnames = true
+  enable_dns_support   = true
 
-  tags = {
-    Name = "eks_custom_vpc"
-  }
+  tags = { Name = "main-vpc" }
 }
 
-# Public Subnets
-resource "aws_subnet" "eks_subnet_a" {
-  vpc_id                  = aws_vpc.eks_vpc.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = "us-east-1a"
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name = "eks_subnet_a"
-  }
-}
-
-resource "aws_subnet" "eks_subnet_b" {
-  vpc_id                  = aws_vpc.eks_vpc.id
-  cidr_block              = "10.0.2.0/24"
-  availability_zone       = "us-east-1b"
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name = "eks_subnet_b"
-  }
-}
-
+##########################################################
 # Internet Gateway
-resource "aws_internet_gateway" "eks_igw" {
-  vpc_id = aws_vpc.eks_vpc.id
+##########################################################
 
-  tags = {
-    Name = "eks_igw"
-  }
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "main-igw" }
 }
 
-# Route Table
-resource "aws_route_table" "eks_route_table" {
-  vpc_id = aws_vpc.eks_vpc.id
+##########################################################
+# Public Subnets (Use for all resources)
+##########################################################
+
+resource "aws_subnet" "public_1" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "ap-south-1a"
+  map_public_ip_on_launch = true
+
+  tags = { Name = "public-subnet-1a" }
+}
+
+resource "aws_subnet" "public_2" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "ap-south-1b"
+  map_public_ip_on_launch = true
+
+  tags = { Name = "public-subnet-1b" }
+}
+
+##########################################################
+# Public Route Table
+##########################################################
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.eks_igw.id
+    gateway_id = aws_internet_gateway.igw.id
   }
 
-  tags = {
-    Name = "eks_route_table"
+  tags = { Name = "public-route-table" }
+}
+
+resource "aws_route_table_association" "public_1" {
+  subnet_id      = aws_subnet.public_1.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_2" {
+  subnet_id      = aws_subnet.public_2.id
+  route_table_id = aws_route_table.public.id
+}
+
+##########################################################
+# Security Group
+##########################################################
+
+resource "aws_security_group" "master_sg" {
+  name   = "master_sg"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-# Route Table Associations
-resource "aws_route_table_association" "a" {
-  subnet_id      = aws_subnet.eks_subnet_a.id
-  route_table_id = aws_route_table.eks_route_table.id
+##########################################################
+# EC2 Master Instance
+##########################################################
+
+resource "aws_instance" "master_instance" {
+  ami                    = "ami-0360c520857e3138f" # Ubuntu 20.04
+  instance_type          = "t3.large"
+  subnet_id              = aws_subnet.public_1.id
+  key_name               = "saurav"
+  vpc_security_group_ids = [aws_security_group.master_sg.id]
+
+  root_block_device {
+    volume_size           = 20
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
+
+  user_data = <<-EOF
+    #!/bin/bash
+    set -e
+    apt update -y && apt install -y unzip curl
+
+    # AWS CLI
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    unzip awscliv2.zip
+    sudo ./aws/install
+
+    # Docker
+    apt install -y docker.io
+    systemctl enable docker
+    systemctl start docker
+
+    # SonarQube
+    docker rm -f sonarqube || true
+    docker pull sonarqube:10.6-community
+    docker run -d --name sonarqube -p 9000:9000 sonarqube:10.6-community
+
+    # OpenJDK
+    apt install -y openjdk-17-jdk
+
+    # Jenkins
+    mkdir -p /etc/apt/keyrings
+    wget -O /etc/apt/keyrings/jenkins-keyring.asc https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+    echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | tee /etc/apt/sources.list.d/jenkins.list
+    apt update -y && apt install -y fontconfig jenkins
+    systemctl enable jenkins && systemctl start jenkins
+
+    # kubectl
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+    echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+    install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+  EOF
+
+  tags = { Name = "master_instance" }
 }
 
-resource "aws_route_table_association" "b" {
-  subnet_id      = aws_subnet.eks_subnet_b.id
-  route_table_id = aws_route_table.eks_route_table.id
-}
+##########################################################
+# EKS IAM Roles
+##########################################################
 
-# IAM Role for EKS Cluster
 resource "aws_iam_role" "eks_cluster_role" {
   name = "eks_cluster_role"
 
   assume_role_policy = jsonencode({
-    Version = "2012-10-17",
+    Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
       Principal = { Service = "eks.amazonaws.com" }
@@ -84,34 +200,16 @@ resource "aws_iam_role" "eks_cluster_role" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
+resource "aws_iam_role_policy_attachment" "cluster_policy" {
   role       = aws_iam_role.eks_cluster_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
-# EKS Cluster
-resource "aws_eks_cluster" "eks_cluster" {
-  name     = "custom-eks-cluster"
-  role_arn = aws_iam_role.eks_cluster_role.arn
-
-  vpc_config {
-    subnet_ids = [
-      aws_subnet.eks_subnet_a.id,
-      aws_subnet.eks_subnet_b.id
-    ]
-  }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy
-  ]
-}
-
-# IAM Role for EKS Node Group
-resource "aws_iam_role" "eks_node_group_role" {
-  name = "eks_node_group_role"
+resource "aws_iam_role" "eks_node_role" {
+  name = "eks_node_role"
 
   assume_role_policy = jsonencode({
-    Version = "2012-10-17",
+    Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
       Principal = { Service = "ec2.amazonaws.com" }
@@ -120,30 +218,37 @@ resource "aws_iam_role" "eks_node_group_role" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "AmazonEKSWorkerNodePolicy" {
-  role       = aws_iam_role.eks_node_group_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+resource "aws_iam_role_policy_attachment" "node_policies" {
+  for_each = toset([
+    "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+    "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  ])
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = each.key
 }
 
-resource "aws_iam_role_policy_attachment" "AmazonEKS_CNI_Policy" {
-  role       = aws_iam_role.eks_node_group_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+##########################################################
+# EKS Cluster & Node Group (Use Public Subnets)
+##########################################################
+
+resource "aws_eks_cluster" "eks_cluster" {
+  name     = "custom-eks"
+  role_arn = aws_iam_role.eks_cluster_role.arn
+
+  vpc_config {
+    subnet_ids = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.cluster_policy]
 }
 
-resource "aws_iam_role_policy_attachment" "AmazonEC2ContainerRegistryReadOnly" {
-  role       = aws_iam_role.eks_node_group_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-# EKS Node Group
-resource "aws_eks_node_group" "eks_node_group" {
+resource "aws_eks_node_group" "eks_nodes" {
   cluster_name    = aws_eks_cluster.eks_cluster.name
-  node_group_name = "custom-node-group"
-  node_role_arn   = aws_iam_role.eks_node_group_role.arn
-  subnet_ids      = [
-    aws_subnet.eks_subnet_a.id,
-    aws_subnet.eks_subnet_b.id
-  ]
+  node_group_name = "eks-nodes"
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  subnet_ids      = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+  instance_types  = ["t3.medium"]
 
   scaling_config {
     desired_size = 2
@@ -151,36 +256,15 @@ resource "aws_eks_node_group" "eks_node_group" {
     min_size     = 1
   }
 
-  instance_types = ["t2.medium"]
-
-  update_config {
-    max_unavailable = 1
-  }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.AmazonEKSWorkerNodePolicy,
-    aws_iam_role_policy_attachment.AmazonEKS_CNI_Policy,
-    aws_iam_role_policy_attachment.AmazonEC2ContainerRegistryReadOnly
-  ]
+  depends_on = [aws_iam_role_policy_attachment.node_policies]
 }
 
-# Outputs
-output "eks_cluster_endpoint" {
-  description = "EKS Cluster API Endpoint"
-  value       = aws_eks_cluster.eks_cluster.endpoint
-}
+##########################################################
+# OUTPUTS
+##########################################################
 
-output "eks_cluster_name" {
-  description = "EKS Cluster Name"
-  value       = aws_eks_cluster.eks_cluster.name
-}
-
-output "vpc_id" {
-  description = "Custom VPC ID"
-  value       = aws_vpc.eks_vpc.id
-}
-
-output "subnet_ids" {
-  description = "Custom Subnet IDs"
-  value       = [aws_subnet.eks_subnet_a.id, aws_subnet.eks_subnet_b.id]
-}
+output "vpc_id" { value = aws_vpc.main.id }
+output "public_subnet_ids" { value = [aws_subnet.public_1.id, aws_subnet.public_2.id] }
+output "master_instance_ip" { value = aws_instance.master_instance.public_ip }
+output "eks_cluster_name" { value = aws_eks_cluster.eks_cluster.name }
+output "eks_cluster_endpoint" { value = aws_eks_cluster.eks_cluster.endpoint }
