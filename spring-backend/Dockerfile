@@ -5,5 +5,5 @@ RUN apt-get update && \
 WORKDIR /app
 COPY . /app
 RUN mvn clean package -Dmaven.test.skip=true
-EXPOSE 8080
+EXPOSE 8085
 CMD ["java", "-jar", "target/spring-backend-v1.jar"]
